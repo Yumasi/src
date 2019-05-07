@@ -2083,6 +2083,8 @@ vcpu_reset_regs_svm(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	/* EFER is R/O so we can ensure the guest always has SVME */
 	svm_setmsrbr(vcpu, MSR_EFER);
 
+	svm_setmsrbr(vcpu, MSR_TSC);
+
 	/* Guest VCPU ASID */
 	if (vmm_alloc_vpid(&asid)) {
 		DPRINTF("%s: could not allocate asid\n", __func__);
@@ -2910,6 +2912,7 @@ vcpu_reset_regs_vmx(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	vmx_setmsrbrw(vcpu, MSR_GSBASE);
 	vmx_setmsrbrw(vcpu, MSR_KERNELGSBASE);
 	vmx_setmsrbr(vcpu, MSR_MISC_ENABLE);
+	vmx_setmsrbr(vcpu, MSR_TSC);
 
 	/* XXX CR0 shadow */
 	/* XXX CR4 shadow */
