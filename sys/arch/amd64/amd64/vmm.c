@@ -92,6 +92,7 @@ struct vmm_softc {
 	uint32_t		nr_svm_cpus;
 	uint32_t		nr_rvi_cpus;
 	uint32_t		nr_ept_cpus;
+	uint32_t		nr_tsc_cpus;
 
 	/* Managed VMs */
 	struct vmlist_head	vm_list;
@@ -361,6 +362,7 @@ vmm_attach(struct device *parent, struct device *self, void *aux)
 	sc->nr_svm_cpus = 0;
 	sc->nr_rvi_cpus = 0;
 	sc->nr_ept_cpus = 0;
+	sc->nr_tsc_cpus = 0;
 	sc->vm_ct = 0;
 	sc->vm_idx = 0;
 
@@ -374,6 +376,8 @@ vmm_attach(struct device *parent, struct device *self, void *aux)
 			sc->nr_rvi_cpus++;
 		if (ci->ci_vmm_flags & CI_VMM_EPT)
 			sc->nr_ept_cpus++;
+		if (ci->ci_feature_flags & CPUID_TSC)
+			sc->nr_tsc_cpus++;
 	}
 
 	SLIST_INIT(&sc->vm_list);
@@ -2085,7 +2089,8 @@ vcpu_reset_regs_svm(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	/* EFER is R/O so we can ensure the guest always has SVME */
 	svm_setmsrbr(vcpu, MSR_EFER);
 
-	svm_setmsrbr(vcpu, MSR_TSC);
+	if (vmm_softc->nr_tsc_cpus)
+		svm_setmsrbr(vcpu, MSR_TSC);
 
 	/* Guest VCPU ASID */
 	if (vmm_alloc_vpid(&asid)) {
@@ -2476,14 +2481,18 @@ vcpu_reset_regs_vmx(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	    IA32_VMX_CR8_LOAD_EXITING |
 	    IA32_VMX_CR8_STORE_EXITING |
 	    IA32_VMX_MONITOR_EXITING |
-	    IA32_VMX_USE_TPR_SHADOW |
-	    IA32_VMX_USE_TSC_OFFSETTING;
-	want0 = IA32_VMX_RDTSC_EXITING;
+	    IA32_VMX_USE_TPR_SHADOW;
+	want0 = 0;
 
 	if (vmm_softc->mode == VMM_MODE_EPT) {
 		want1 |= IA32_VMX_ACTIVATE_SECONDARY_CONTROLS;
 		want0 |= IA32_VMX_CR3_LOAD_EXITING |
 		    IA32_VMX_CR3_STORE_EXITING;
+	}
+
+	if (vmm_softc->nr_tsc_cpus) {
+		want1 |= IA32_VMX_USE_TSC_OFFSETTING;
+		want0 |= IA32_VMX_RDTSC_EXITING;
 	}
 
 	if (vcpu->vc_vmx_basic & IA32_VMX_TRUE_CTLS_AVAIL) {
@@ -2916,7 +2925,8 @@ vcpu_reset_regs_vmx(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	vmx_setmsrbrw(vcpu, MSR_GSBASE);
 	vmx_setmsrbrw(vcpu, MSR_KERNELGSBASE);
 	vmx_setmsrbr(vcpu, MSR_MISC_ENABLE);
-	vmx_setmsrbr(vcpu, MSR_TSC);
+	if (vmm_softc->nr_tsc_cpus)
+		vmx_setmsrbr(vcpu, MSR_TSC);
 
 	/* XXX CR0 shadow */
 	/* XXX CR4 shadow */
@@ -6929,9 +6939,10 @@ vmm_update_pvclock(struct vcpu *vcpu)
  */
 int vmx_set_tsc_offset(struct vcpu *vcpu, uint64_t offset)
 {
-	int error;
+	int error = 0;
 
-	error = vmwrite(VMCS_TSC_OFFSET, offset);
+	if (vmm_softc->nr_tsc_cpus)
+		error = vmwrite(VMCS_TSC_OFFSET, offset);
 
 	if (error != 0)
 		DPRINTF("%s: could not set TSC offsetting\n", __func__);
@@ -6947,7 +6958,8 @@ int vmx_set_tsc_offset(struct vcpu *vcpu, uint64_t offset)
  */
 void svm_set_tsc_offset(struct vcpu *vcpu, uint64_t offset)
 {
-	vcpu->vc_svm_tsc_offset = offset;
+	if (vmm_softc->nr_tsc_cpus)
+		vcpu->vc_svm_tsc_offset = offset;
 }
 
 /*
