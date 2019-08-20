@@ -939,6 +939,7 @@ struct vcpu {
 	paddr_t vc_svm_hsa_pa;
 	vaddr_t vc_svm_ioio_va;
 	paddr_t vc_svm_ioio_pa;
+	uint64_t vc_svm_tsc_offset;
 };
 
 SLIST_HEAD(vcpu_head, vcpu);

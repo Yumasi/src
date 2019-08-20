@@ -204,6 +204,8 @@ void svm_set_dirty(struct vcpu *, uint32_t);
 
 void vmm_init_pvclock(struct vcpu *, paddr_t);
 int vmm_update_pvclock(struct vcpu *);
+int vmx_set_tsc_offset(struct vcpu *, uint64_t);
+void svm_set_tsc_offset(struct vcpu *, uint64_t);
 
 #ifdef VMM_DEBUG
 void dump_vcpu(struct vcpu *);
@@ -2461,6 +2463,7 @@ vcpu_reset_regs_vmx(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	 * IA32_VMX_CR8_STORE_EXITING - guest TPR access
 	 * IA32_VMX_USE_TPR_SHADOW - guest TPR access (shadow)
 	 * IA32_VMX_MONITOR_EXITING - exit on MONITOR instruction
+	 * IA32_VMX_USE_TSC_OFFSETTING - guest write to TSC
 	 *
 	 * If we have EPT, we must be able to clear the following
 	 * IA32_VMX_CR3_LOAD_EXITING - don't care about guest CR3 accesses
@@ -2473,8 +2476,9 @@ vcpu_reset_regs_vmx(struct vcpu *vcpu, struct vcpu_reg_state *vrs)
 	    IA32_VMX_CR8_LOAD_EXITING |
 	    IA32_VMX_CR8_STORE_EXITING |
 	    IA32_VMX_MONITOR_EXITING |
-	    IA32_VMX_USE_TPR_SHADOW;
-	want0 = 0;
+	    IA32_VMX_USE_TPR_SHADOW |
+	    IA32_VMX_USE_TSC_OFFSETTING;
+	want0 = IA32_VMX_RDTSC_EXITING;
 
 	if (vmm_softc->mode == VMM_MODE_EPT) {
 		want1 |= IA32_VMX_ACTIVATE_SECONDARY_CONTROLS;
@@ -3273,6 +3277,9 @@ vcpu_init_svm(struct vcpu *vcpu)
 		ret = ENOMEM;
 		goto exit;
 	}
+
+	/* Initialize TSC offset to zero */
+	vcpu->vc_svm_tsc_offset = 0;
 
 	DPRINTF("%s: IOIO va @ 0x%llx, pa @ 0x%llx\n", __func__,
 	    (uint64_t)vcpu->vc_svm_ioio_va,
@@ -6153,6 +6160,10 @@ vmx_handle_wrmsr(struct vcpu *vcpu)
 		 */
 		ret = vmm_inject_gp(vcpu);
 		return (ret);
+	case MSR_TSC:
+		ret = vmx_set_tsc_offset(vcpu, ((*rdx << 32) |
+						(*rax & 0xFFFFFFFFULL) - rdtsc());
+		return (ret);
 	case KVM_MSR_SYSTEM_TIME:
 		vmm_init_pvclock(vcpu,
 		    (*rax & 0xFFFFFFFFULL) | (*rdx  << 32));
@@ -6205,6 +6216,9 @@ svm_handle_msr(struct vcpu *vcpu)
 		} else if (*rcx == KVM_MSR_SYSTEM_TIME) {
 			vmm_init_pvclock(vcpu,
 			    (*rax & 0xFFFFFFFFULL) | (*rdx  << 32));
+		} else if (*rcx == MSR_TSC) {
+			svm_set_tsc_offset(vcpu, ((*rdx << 32) |
+						  (*rax & 0xFFFFFFFFULL) - rdtsc())
 		} else {
 #ifdef VMM_DEBUG
 			/* Log the access, to be able to identify unknown MSRs */
@@ -6699,6 +6713,9 @@ vcpu_run_svm(struct vcpu *vcpu, struct vm_run_params *vrp)
 		}
 
 		KASSERT(vmcb->v_intercept1 & SVM_INTERCEPT_INTR);
+
+		/* Restore TSC offset value */
+		vmcb->v_tsc_offset = vcpu->vc_svm_tsc_offset;
 		KERNEL_UNLOCK();
 
 		wrmsr(MSR_AMD_VM_HSAVE_PA, vcpu->vc_svm_hsa_pa);
@@ -6902,6 +6919,35 @@ vmm_update_pvclock(struct vcpu *vcpu)
 		pvclock_ti->ti_version &= ~0x1;
 	}
 	return (0);
+}
+
+/*
+ * vmx_set_tsc_offset
+ *
+ * Sets VMCS' TSC offset field to 'offset'
+ *
+ */
+int vmx_set_tsc_offset(struct vcpu *vcpu, uint64_t offset)
+{
+	int error;
+
+	error = vmwrite(VMCS_TSC_OFFSET, offset);
+
+	if (error != 0)
+		DPRINTF("%s: could not set TSC offsetting\n", __func__);
+
+	return (error);
+}
+
+/*
+ * svm_set_tsc_offset
+ *
+ * Sets the vcpu TSC offset to 'offset'
+ *
+ */
+void svm_set_tsc_offset(struct vcpu *vcpu, uint64_t offset)
+{
+	vcpu->vc_svm_tsc_offset = offset;
 }
 
 /*
